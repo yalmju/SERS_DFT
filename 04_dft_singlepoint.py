@@ -94,8 +94,7 @@ for n in ("THI", "TBZ", "DQ"):
 
 # bare 4x4: same lattice, quick MACE relaxation
 from mace.calculators import mace_mp
-try: MACE = mace_mp(model="medium", dispersion=True, default_dtype="float64", device="cpu")
-except Exception: MACE = mace_mp(model="medium", default_dtype="float64", device="cpu")
+MACE = mace_mp(model="medium", dispersion=True, default_dtype="float64", device="cpu")   # MACE-MP-0 + D3; no silent fallback
 ref = SYS["THI@Au"]
 bare = ref[:48].copy()
 bare.set_constraint(FixAtoms(indices=[i for i in range(48) if bare.positions[i, 2] < bare.positions[:, 2].min() + 0.5]))
@@ -121,10 +120,12 @@ PPS, ECUTW, ECUTR = pp_info(ELEMS)
 log(f"\n[3] QE settings: PBE + D3(BJ), ecutwfc {ECUTW} Ry, ecutrho {ECUTR} Ry, elements {ELEMS}")
 
 ORDER = ["Au", "THI_gas", "TBZ_gas", "DQ_gas", "THI@Au", "TBZ@Au", "DQ@Au"]
-# run mode: (diagonalization, use QE built-in D3). The first mode that works is used for all calculations
-MODES = [("david", True), ("cg", True), ("david", False)]
+# run mode: (diagonalization, QE built-in D3). D3 is always QE built-in; the first diagonalization that works is used for all calculations
+MODES = [("david", True), ("cg", True)]
 MODE_FILE = f"{W}/mode.json"
 MODE = tuple(json.load(open(MODE_FILE))) if os.path.exists(MODE_FILE) else None
+if MODE is not None and not MODE[1]:
+    sys.exit(f"[abort] {MODE_FILE} requests D3 without QE built-in D3, which is not supported. Delete it and rerun.")
 
 def qe_input(name, atoms, mode, gamma=True):
     diag, qe_d3 = mode
@@ -162,7 +163,7 @@ def run(name, mode, gamma=True):
     nk = 2 if slab else 1
     cmd = (f"ulimit -s hard 2>/dev/null; mpirun -np {NP} pw.x -nk {nk} -nd 1 "
            f"-in {os.path.basename(fin)} > {os.path.basename(fout)} 2> {tag}.err")
-    log(f"  ▶ {name:<8s} start {time.strftime('%H:%M')}  (diag {mode[0]}, D3 {'QE' if mode[1] else 'post-hoc'}"
+    log(f"  ▶ {name:<8s} start {time.strftime('%H:%M')}  (diag {mode[0]}"
         f"{'' if gamma else ', k=1x1x1'})")
     t = time.time()
     subprocess.run(cmd, shell=True, cwd=W, env=ENV, executable="/bin/zsh" if os.path.exists("/bin/zsh") else None)
@@ -170,14 +171,14 @@ def run(name, mode, gamma=True):
     return done(fout), time.time() - t, fout
 
 for name in ORDER:
-    fin, slab = qe_input(name, SYS[name], MODE or MODES[0]); fout = fin.replace(".in", ".out")
+    fout = f"{W}/{name.replace('@', '_')}.out"     # the .in is written only when the calculation actually runs
     if DRY:
+        fin, _ = qe_input(name, SYS[name], MODE or MODES[0])
         log(f"  [dry-run] wrote {fin}"); continue
     if not done(fout):
         if MODE:
-            # keep the D3 setting, retry with another SCF solver only (same energy)
-            d3 = MODE[1]
-            modes = [(MODE, True), (("cg", d3), True), ((MODE[0], d3), False), (("cg", d3), False)]
+            # retry with another SCF solver only (same energy)
+            modes = [(MODE, True), (("cg", True), True), ((MODE[0], True), False), (("cg", True), False)]
         else:
             modes = [(m, True) for m in MODES]
         for k, (m, gam) in enumerate(modes, 1):
@@ -185,7 +186,7 @@ for name in ORDER:
             if ok:
                 if MODE is None:
                     MODE = m; json.dump(list(m), open(MODE_FILE, "w"))
-                    log(f"    → working setup fixed: diag {m[0]}, D3 {'QE built-in' if m[1] else 'torch-dftd post-hoc'}")
+                    log(f"    → working setup fixed: diag {m[0]}")
                 break
             err = open(f"{W}/{name.replace('@','_')}.err", errors="ignore").read()
             outt = open(fout, errors="ignore").read() if os.path.exists(fout) else ""
@@ -202,16 +203,8 @@ for name in ORDER:
             continue
         TIMES[name] = dt
         log(f"    done {time.strftime('%H:%M')}  ({dt/60:.1f} min)")
-        if name == "Au":
-            log(f"    → estimated remaining time ~{dt * (3 * 1.15 + 3 * 0.25) / 3600:.1f} h")
     try:
         E_DFT[name] = read(fout, format="espresso-out").get_potential_energy()
-        if MODE is not None and not MODE[1]:      # without QE D3: add the same D3(BJ) post hoc
-            from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
-            a = SYS[name].copy()
-            if "_gas" in name: a.pbc = False
-            a.calc = TorchDFTD3Calculator(device="cpu", damping="bj", xc="pbe")
-            E_DFT[name] += a.get_potential_energy()
         log(f"    E_DFT({name}) = {E_DFT[name]:.4f} eV")
     except Exception as e:
         log(f"    [warning] could not read {name} result ({e.__class__.__name__}); check {fout}")

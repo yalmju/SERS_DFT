@@ -4,7 +4,7 @@
 
 This repository contains the DFT workflow used to study competitive adsorption for a CNF@Au SERS ink. Thiram (THI), thiabendazole (TBZ) and diquat (DQ·2Br) are compared on Au(111) at several surface densities, against the cellulose nanofiber (CNF) binder, and in 1:1:1 co-adsorption.
 
-All calculations are Quantum ESPRESSO (pw.x) single-points at the PBE + D3(BJ) level with SSSP PBE efficiency pseudopotentials. They run on structures relaxed with MACE-MP-0 + D3 (MLIP), and energies are referenced to water using GFN2-xTB/ALPB solvation free energies:
+All calculations are Quantum ESPRESSO (pw.x) single-points at the PBE + D3(BJ) level, with D3 computed by QE itself, and SSSP PBE efficiency pseudopotentials. They run on structures relaxed with MACE-MP-0 + D3 (MLIP), and energies are referenced to water using GFN2-xTB/ALPB solvation free energies:
 
 E_ads,aq(X) = E(Au+X) − E(Au) − [E_gas(X) + G_solv(X)]
 
@@ -25,13 +25,14 @@ The scripts expect the MLIP and xTB inputs in `data/`:
 - `results_fix`: high-density THI structures and solvation energies (`fix_summary.csv`)
 - `results_cnf`: CNF and molecules on Au, plus CNF binding energies
 - `results_ternary`: 1:1:1 co-adsorption structures in the 4×4 cell
-- `results_aq`: water-referenced MLIP summary tables
 
-DFT outputs (QE `.in`/`.out` files, CSV tables and logs) are written to `results/`. Pseudopotentials are downloaded into `pseudo/` by `04_dft_singlepoint.py` on first run.
+DFT outputs (QE `.in`/`.out` files, CSV tables and logs) are written to `results/`. If `pseudo/` has no SSSP set, `04_dft_singlepoint.py` downloads SSSP 1.3.0 PBE efficiency into it. When several SSSP JSON files are present, the last one in sorted order is used, so keep only the set you intend to use.
 
 # Running the code
 
-Run every script from the repository root. Each script skips calculations whose `.out` file already contains `JOB DONE`, so an interrupted run resumes where it stopped. QE scratch files go to `~/qe_tmp`.
+Run every script from the repository root on macOS or Linux; the scripts call `mpirun` through a POSIX shell (zsh if available). QE scratch files go to `~/qe_tmp`, so do not run two scripts at the same time.
+
+A finished calculation (`.out` containing `JOB DONE`) is reused instead of rerun. Scripts 07, 12, 15 and 16 reuse it only if the elements, atomic positions and cell match the previous input. They do not compare cutoff, k-points or pseudopotentials, so delete the matching folder in `results/` before rerunning with different settings.
 
 ### 1. Create the environment using the file `sers_dft.yml`
 
@@ -75,7 +76,20 @@ DFT_NK=1 python 15_dft_cnf.py
 DFT_NK=1 python 16_dft_ternary118.py
 ```
 
-Common options: `DFT_NP` sets the number of MPI processes (default 10), `DFT_NK` the number of k-point pools, and `DFT_DRY_RUN=1` writes inputs without running pw.x. `qe_tools.py` holds the shared QE helpers.
+Options:
+
+| Variable | Used by | Meaning |
+|---|---|---|
+| `DFT_NP` | all | number of MPI processes (default 10) |
+| `DFT_NK` | 07, 12, 15, 16 | number of k-point pools (04 always uses 2 for slabs) |
+| `DFT_ECUT` | 12, 15 | cutoff override, e.g. `45,360` |
+| `DFT_LOWMEM` | 07, 12, 15, 16 | minimal Davidson workspace |
+| `DFT_COV_CELLS` | 12 | cells to compute, e.g. `3x2,3x3` |
+| `DFT_CNF_K` | 15 | k-points instead of Γ-only, e.g. `2,2,1` |
+| `CONV_DQ` | 07 | `1` also tests DQ·2Br |
+| `DFT_DRY_RUN` | 04 only | `1` writes QE inputs without running pw.x (MACE structure preparation and the pseudopotential download still run) |
+
+`qe_tools.py` holds the shared QE helpers.
 
 # For cite of this work:
 

@@ -43,8 +43,7 @@ for r in csv.reader(open("data/results_fix/fix_summary.csv")):
 # ---------------------------------------------------------------- structures + bare Au (as in 12)
 os.environ.setdefault("OMP_NUM_THREADS", "10")
 from mace.calculators import mace_mp
-try: MACE = mace_mp(model="medium", dispersion=True, default_dtype="float64", device="cpu")
-except Exception: MACE = mace_mp(model="medium", default_dtype="float64", device="cpu")
+MACE = mace_mp(model="medium", dispersion=True, default_dtype="float64", device="cpu")   # MACE-MP-0 + D3; no silent fallback
 SYS = {k: read(f"data/results_ternary/4x4_{k.replace('+', '_')}.traj") for k in STATES}
 first = next(iter(SYS.values()))
 bare = first[[a.index for a in first if a.symbol == "Au"]].copy()

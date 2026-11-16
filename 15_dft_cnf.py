@@ -69,8 +69,7 @@ log(f"G_solv(xTB): THI {GS['THI']:.2f}  TBZ {GS['TBZ']:.2f}  DQ·2Br {GS['DQ']:.
 # ---------------------------------------------------------------- structures (MLIP) + bare Au
 os.environ.setdefault("OMP_NUM_THREADS", "10")
 from mace.calculators import mace_mp
-try: MACE = mace_mp(model="medium", dispersion=True, default_dtype="float64", device="cpu")
-except Exception: MACE = mace_mp(model="medium", default_dtype="float64", device="cpu")
+MACE = mace_mp(model="medium", dispersion=True, default_dtype="float64", device="cpu")   # MACE-MP-0 + D3; no silent fallback
 def e_ml(a, pbc=True):
     b = a.copy(); b.set_constraint(); b.pbc = pbc; b.calc = MACE; return b.get_potential_energy()
 

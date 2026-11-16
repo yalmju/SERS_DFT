@@ -10,7 +10,8 @@ Structures: for each molecule, the lowest-energy MLIP structure from the MLIP co
 Gas molecules: reuse 04 results (same pseudopotentials, cutoff and box). Water-referenced; DQ as DQ·2Br salt.
 Run selected cells only: DFT_COV_CELLS=3x2,3x3
 
-Input:  data/results_compete/, data/results_fix/, data/results_aq/, results/dft_check/
+Input:  data/results_compete/, data/results_fix/, results/dft_check/
+(118 Å² values are in results/dft_check/dft_vs_mace.csv from 04, not in this table.)
 Output: results/dft_coverage/dft_coverage.csv, coverage_log.txt
 """
 import os, csv, glob
@@ -50,8 +51,7 @@ from ase.io import read
 from ase.constraints import FixAtoms
 from ase.optimize import BFGS
 from mace.calculators import mace_mp
-try: MACE = mace_mp(model="medium", dispersion=True, default_dtype="float64", device="cpu")
-except Exception: MACE = mace_mp(model="medium", default_dtype="float64", device="cpu")
+MACE = mace_mp(model="medium", dispersion=True, default_dtype="float64", device="cpu")   # MACE-MP-0 + D3; no silent fallback
 def e_ml(a, pbc=True):
     b = a.copy(); b.set_constraint(); b.pbc = pbc; b.calc = MACE; return b.get_potential_energy()
 E_gas_ml = {n: e_ml(S04[f"{n}_gas"], pbc=False) for n in NAMES}
@@ -116,16 +116,6 @@ for cl, (size, kpts) in CELLS.items():
             + (f" | THI←TBZ {d['THI'] - d['TBZ']:+.2f}" if "THI" in d and "TBZ" in d else "")
             + (f" | THI←DQ {d['THI'] - d['DQ']:+.2f}" if "THI" in d and "DQ" in d else ""))
 
-# add 118 Å² (04 results) to the same table
-if os.path.exists("data/results_aq/aq_summary.csv"):
-    sp = {}
-    for r in csv.reader(open("data/results_aq/aq_summary.csv")):
-        if r and r[0].startswith("single_point_118A2_"): sp.setdefault(r[0].split("_")[-1], {})[r[1]] = r[2]
-    for meth, key in (("DFT", "DFT"), ("MLIP", "MACE")):
-        d = sp.get(key, {})
-        if d:
-            rows.append(["4x4", "118", meth, d.get("E_ads,aq THI", ""), d.get("E_ads,aq TBZ", ""), d.get("E_ads,aq DQ", ""),
-                         d.get("ΔE_aq THI←TBZ", ""), d.get("ΔE_aq THI←DQ", ""), d.get("ΔE_aq TBZ←DQ", "")])
 # keep existing table rows for cells not computed in this run
 if os.path.exists(f"{W}/dft_coverage.csv"):
     now = {r[0] for r in rows}

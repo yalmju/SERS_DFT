@@ -45,13 +45,15 @@ def pp_info(sssp, elements):
 
 
 def mode_d3():
-    """Run mode fixed by 04: (diagonalization, use QE built-in D3). Default if absent."""
+    """Run mode fixed by 04: (diagonalization, QE built-in D3). Only QE built-in D3 is supported."""
     f = "results/dft_check/mode.json"
-    return tuple(json.load(open(f))) if os.path.exists(f) else ("david", True)
+    mode = tuple(json.load(open(f))) if os.path.exists(f) else ("david", True)
+    if not mode[1]:
+        sys.exit(f"[abort] {f} requests D3 without QE built-in D3, which is not supported.")
+    return mode
 
 
-def write_input(path, atoms, prefix, pps, ecutwfc, ecutrho, kpts, slab, diag, d3=True,
-                keep_density=False, extra_system=None):
+def write_input(path, atoms, prefix, pps, ecutwfc, ecutrho, kpts, slab, diag, d3=True):
     data = {
         "control": {"calculation": "scf", "prefix": prefix, "pseudo_dir": PSEUDO,
                     "outdir": os.path.join(TMP, prefix), "disk_io": "low", "tprnfor": False},
@@ -64,7 +66,6 @@ def write_input(path, atoms, prefix, pps, ecutwfc, ecutrho, kpts, slab, diag, d3
     if d3: data["system"].update({"vdw_corr": "dft-d3", "dftd3_version": 4})
     if os.environ.get("DFT_LOWMEM"):            # save memory: minimal Davidson workspace
         data["electrons"]["diago_david_ndim"] = 2
-    if extra_system: data["system"].update(extra_system)
     write(path, atoms, format="espresso-in", input_data=data, pseudopotentials=pps, kpts=kpts)
     txt = open(path).read()
     for nl in ("&FCP\n/\n", "&RISM\n/\n", "&CELL\n/\n", "&IONS\n/\n"):
@@ -80,20 +81,22 @@ def energy(out):
     return read(out, format="espresso-out").get_potential_energy()
 
 
-def run_pw(workdir, name, atoms, pps, ecutwfc, ecutrho, kpts, slab, log, keep_density=False):
+def run_pw(workdir, name, atoms, pps, ecutwfc, ecutrho, kpts, slab, log):
     """Skip if already done; on failure, retry with other diagonalization/k-point setups. Returns the output path or None."""
     os.makedirs(workdir, exist_ok=True)
     fout = os.path.join(workdir, f"{name}.out")
     if done(fout):
-        same = True
-        try:                                            # recompute if the structure changed under the same name
+        same = False
+        try:                                            # reuse only if elements, positions and cell match
             prev = read(os.path.join(workdir, f"{name}.in"), format="espresso-in")
-            same = len(prev) == len(atoms) and np.abs(prev.positions - atoms.positions).max() < 1e-3
-        except Exception:
+            same = (prev.get_chemical_symbols() == atoms.get_chemical_symbols()
+                    and np.abs(prev.positions - atoms.positions).max() < 1e-3
+                    and np.abs(prev.cell.array - atoms.cell.array).max() < 1e-3)
+        except Exception:                               # unreadable input: do not reuse
             pass
         if same:
             log(f"  ✓ {name:<22s} (reusing existing result)"); return fout
-        log(f"  ↻ {name:<22s} structure changed, recomputing")
+        log(f"  ↻ {name:<22s} structure changed or previous input unreadable, recomputing")
     diag0, d3 = mode_d3()
     if slab:
         # Γ-only (gamma trick) + Davidson can fail on large slabs (6×6),
@@ -115,7 +118,7 @@ def run_pw(workdir, name, atoms, pps, ecutwfc, ecutrho, kpts, slab, log, keep_de
         subprocess.run(cmd, shell=True, cwd=workdir, env=ENV, executable=SHELL)
         if done(fout):
             log(f"    done ({(time.time()-t)/60:.1f} min)")
-            if not keep_density: shutil.rmtree(os.path.join(TMP, name), ignore_errors=True)
+            shutil.rmtree(os.path.join(TMP, name), ignore_errors=True)
             return fout
         log(f"    failed (attempt {k}){' → retrying' if k < len(tries) else ''}")
         for ext in ("out", "err"):                       # keep for diagnosing the failure
@@ -128,25 +131,6 @@ def run_pw(workdir, name, atoms, pps, ecutwfc, ecutrho, kpts, slab, log, keep_de
     shutil.rmtree(os.path.join(TMP, name), ignore_errors=True)
     return None
 
-
-def run_pp_cube(workdir, name, log):
-    """Write the pw.x charge density to a cube file (pp.x, plot_num=0)"""
-    cube = os.path.join(workdir, f"{name}.cube")
-    if os.path.exists(cube) and os.path.getsize(cube) > 1000:
-        return cube
-    inp = (f"&INPUTPP\n prefix='{name}'\n outdir='{os.path.join(TMP, name)}'\n"
-           f" filplot='{name}.pp'\n plot_num=0\n/\n"
-           f"&PLOT\n nfile=1\n filepp(1)='{name}.pp'\n weight(1)=1.0\n iflag=3\n"
-           f" output_format=6\n fileout='{name}.cube'\n/\n")
-    open(os.path.join(workdir, f"{name}.pp.in"), "w").write(inp)
-    cmd = f"ulimit -s hard 2>/dev/null; mpirun -np {NP} pp.x -in {name}.pp.in > {name}.pp.out 2>&1"
-    subprocess.run(cmd, shell=True, cwd=workdir, env=ENV, executable=SHELL)
-    if not os.path.exists(cube):
-        log(f"    [warning] {name} cube generation failed (check {name}.pp.out)"); return None
-    for f in glob.glob(os.path.join(workdir, f"{name}.pp")):
-        os.remove(f)
-    shutil.rmtree(os.path.join(TMP, name), ignore_errors=True)
-    return cube
 
 
 def read_structures_from_singlepoint():
