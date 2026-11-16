@@ -1,0 +1,9 @@
+pseudo/
+qe_tmp/
+__pycache__/
+*.pyc
+.DS_Store
+*.err
+*.save/
+data/
+results/

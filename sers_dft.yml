@@ -1,0 +1,17 @@
+name: sers_dft
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - ase
+  - numpy
+  - matplotlib
+  - pytorch          # conda-forge판 (pip판과 혼용 금지: OpenMP 충돌)
+  - rdkit
+  - qe               # Quantum ESPRESSO (pw.x, pp.x)
+  - openmpi
+  - xtb
+  - pip
+  - pip:
+      - mace-torch
+      - torch-dftd
