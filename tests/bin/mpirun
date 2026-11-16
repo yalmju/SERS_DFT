@@ -1,0 +1,4 @@
+#!/bin/sh
+# Test stand-in for mpirun: drops "-np N" and runs the program once.
+if [ "$1" = "-np" ]; then shift 2; fi
+exec "$@"

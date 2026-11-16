@@ -1,17 +1,18 @@
+# Versions validated on macOS arm64 (the exact environment is in env/conda-osx-arm64.lock + env/pip-osx-arm64.txt).
+# Linux has not been validated; this file is the portable specification.
 name: sers_dft
 channels:
   - conda-forge
 dependencies:
-  - python=3.11
-  - ase
-  - numpy
-  - matplotlib
-  - pytorch          # conda-forge판 (pip판과 혼용 금지: OpenMP 충돌)
-  - rdkit
-  - qe               # Quantum ESPRESSO (pw.x, pp.x)
-  - openmpi
-  - xtb
+  - python=3.11.18
+  - ase=3.29.0
+  - numpy=2.4.6
+  - pytorch=2.14.1     # conda-forge build; do not mix with the pip build (OpenMP conflicts)
+  - qe=7.6             # Quantum ESPRESSO (pw.x)
+  - openmpi=5.0.11
+  - xtb=6.7.1
   - pip
   - pip:
-      - mace-torch
-      - torch-dftd
+      - mace-torch==0.3.17
+      - torch-dftd==0.5.3
+      - e3nn==0.4.4
