@@ -1,5 +1,5 @@
 """
-Shared helpers for all DFT stages (04, 07, 12, 15, 16) and for aggregate.py.
+Shared helpers for all stages (04, 07, 12, 15, 16, 17, 18) and for aggregate.py.
 
 Calculation settings (identical for every stage):
   PBE + D3(BJ) computed by QE itself (vdw_corr='dft-d3', dftd3_version=4)
@@ -51,6 +51,8 @@ KNOWN_OPTIONS = {
     "DFT_COV_CELLS": "12: comma-separated cells (3x2, 3x3, 5x5)",
     "DFT_CNF_K": "15: k-points 'n1,n2,n3' instead of Γ-only",
     "DFT_CNF_ECUT": "15: cutoff 'ecutwfc,ecutrho' (default 45,360)",
+    "DFT_POSE_CELLS": "17: comma-separated cells (3x2, 3x3, 4x4, 5x5)",
+    "DFT_THERMO_THREADS": "18: torch threads for the MLIP frequency calculations (default 2)",
     "CONV_DQ": "07: 1 = also test DQ·2Br",
 }
 

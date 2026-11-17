@@ -14,6 +14,8 @@ The workflow covers:
 - adsorption at other surface densities (3×2, 3×3 and 5×5 cells), `12_dft_coverage.py`
 - competition with CNF and displacement from CNF onto Au (6×6 cell), `15_dft_cnf.py`
 - re-ranking of 1:1:1 co-adsorption states at 118 Å², `16_dft_ternary118.py`
+- adsorption energy of every pose (upright, flat, dissociated) at every surface density, `17_dft_poses.py`
+- thermal free-energy corrections (zero-point energy, vibrational enthalpy and entropy) from MLIP frequencies, `18_thermo.py`
 
 `qe_tools.py` runs and checks every pw.x calculation; `aggregate.py` builds all result tables from stored outputs.
 
@@ -31,7 +33,8 @@ The scripts expect the MLIP and xTB inputs in `data/`:
 Outputs go to `results/`:
 - `results/<stage>/`: QE `.in`/`.out`/`.err`, one `<name>.meta.json` per calculation, `record.json` (every planned calculation of the stage) and a log
 - `results/<stage>/_archive/`: older runs and failed attempts (nothing is deleted)
-- `results/tables/`: `calculations.csv`, `check.csv`, `convergence.csv`, `coverage.csv`, `cnf.csv`, `ternary118.csv` and `schema.json`
+- `results/thermo/`: `thermo.json` (frequencies and corrections), `vib/` (finite-difference cache) and a log
+- `results/tables/`: `calculations.csv`, `check.csv`, `convergence.csv`, `coverage.csv`, `cnf.csv`, `ternary118.csv`, `poses.csv`, `thermo.csv`, `free_energy.csv` and `schema.json`
 
 ### Pinned inputs
 
@@ -76,7 +79,7 @@ python -m unittest discover -s tests -v
 DFT_DRY_RUN=1 python 04_dft_singlepoint.py
 ```
 
-A dry run writes QE inputs and `record.json` to `results_dryrun/` and never calls `pw.x` or `xtb`. It still prepares structures with MACE and may download the pseudopotentials and the MACE model. `results/` is not touched. Stages 07–16 read the 04 structures from `results/dft_check/`, so dry-run them after 04 has completed.
+A dry run writes QE inputs and `record.json` to `results_dryrun/` and never calls `pw.x` or `xtb`. It still prepares structures with MACE and may download the pseudopotentials and the MACE model. `results/` is not touched. Stages 07–18 read the 04 structures from `results/dft_check/`, so dry-run them after 04 has completed.
 
 ### 4. Run the calculations
 
@@ -87,9 +90,13 @@ DFT_COV_CELLS=3x2,3x3 python 12_dft_coverage.py
 DFT_COV_CELLS=5x5 DFT_ECUT=45,360 DFT_NK=1 python 12_dft_coverage.py
 DFT_NK=1 python 15_dft_cnf.py
 DFT_NK=1 python 16_dft_ternary118.py
+DFT_NK=1 python 17_dft_poses.py
+nice -n 19 python 18_thermo.py
 ```
 
-Run 04 first; the other stages reuse its structures and gas-phase references. The second 12 line runs the 5×5 cell with lower-memory settings; partial runs add to the stage record instead of replacing it.
+Run 04 first; the other stages reuse its structures and gas-phase references. The second 12 line runs the 5×5 cell with lower-memory settings; partial runs add to the stage record instead of replacing it. 17 runs after 04, 12 and 16: it places each remaining pose in the cell of their bare slab, uses the same cutoff and k-points, and reuses every pose they already computed.
+
+18 runs no pw.x and can run next to the DFT stages at low priority. For each structure it relaxes the adsorbate tightly with MACE (Au fixed), computes a finite-difference partial Hessian, and stores the corrections from three low-frequency treatments: harmonic, modes raised to 100 cm⁻¹ (Truhlar), and quasi-RRHO (Grimme). Gas molecules are ideal gases at 1 M. If the tight relaxation changes the pose, the frequencies are taken at the input geometry and the table marks the row (`frequencies_at`). `free_energy.csv` adds the corrections to the DFT energies of 15, 16 and 17. For DQ·2Br it also gives the value with dissociated DQ²⁺ + 2 Br⁻ as the reference. Results are cached per input file, so an interrupted run resumes.
 
 Each stage ends by rebuilding `results/tables/` and exits with status 1 if any calculation failed or is incomplete. Completion requires pw.x exit code 0, `JOB DONE`, a converged SCF, the QE D3 term and a parsed energy. A calculation is reused only if its metadata says completed and its fingerprint matches: elements, positions, cell, periodicity, cutoff, k-points, physical QE settings and UPF checksums. Otherwise the old files are moved to `_archive/` and pw.x runs again.
 
@@ -124,6 +131,8 @@ DFT_ADOPT=1 python 04_dft_singlepoint.py
 | `DFT_COV_CELLS` | 12 | cells to compute: `3x2`, `3x3`, `5x5` |
 | `DFT_CNF_ECUT` | 15 | cutoff (default `45,360`) |
 | `DFT_CNF_K` | 15 | k-points `n1,n2,n3` instead of Γ-only |
+| `DFT_POSE_CELLS` | 17 | cells to compute: `3x2`, `3x3`, `4x4`, `5x5` |
+| `DFT_THERMO_THREADS` | 18 | PyTorch threads (default 2) |
 | `CONV_DQ` | 07 | `1`: also test DQ·2Br |
 
 Each option is checked for format and range, an unknown `DFT_*` variable stops the run, and the options in effect are written to the log. `DFT_DRY_RUN`, `DFT_ADOPT` and `DFT_RECOMPUTE` cannot be combined.

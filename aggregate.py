@@ -13,7 +13,8 @@ and calls build() at the end. Status of each calculation:
 Derived quantities are computed only when every input is completed; otherwise the value is left
 empty and status/reason name the first missing input. Missing values are never treated as zero.
 
-Output: results/tables/{calculations,check,convergence,coverage,cnf,ternary118}.csv and schema.json
+Output: results/tables/{calculations,check,convergence,coverage,cnf,ternary118,poses}.csv, and with
+        results/thermo/thermo.json also thermo.csv and free_energy.csv; schema.json
 """
 import os, sys, csv, json, glob
 from collections import Counter
@@ -28,7 +29,16 @@ COLUMNS = {
     "coverage": ["cell", "area_A2", "quantity", "method", "value_eV", "pose", "ecut_Ry", "status", "reason", "inputs"],
     "cnf": ["molecule", "quantity", "method", "value_eV", "status", "reason", "inputs"],
     "ternary118": ["state", "quantity", "method", "value_eV", "status", "reason", "inputs"],
+    "poses": ["cell", "area_A2", "molecule", "pose", "origin", "structure", "quantity", "method", "value_eV",
+              "lowest_in_cell", "ecut_Ry", "kpts", "status", "reason", "inputs"],
+    "thermo": ["kind", "name", "molecules", "n_modes", "n_imag", "relax_converged", "relax_max_shift_A",
+               "internal_rmsd_A", "frequencies_at",
+               "ZPE_eV", "G_corr_harmonic_eV", "G_corr_truhlar100_eV", "G_corr_grimme_eV"],
+    "free_energy": ["table", "cell", "system", "pose", "origin", "quantity", "E_aq_DFT_eV", "dG_corr_harmonic_eV",
+                    "dG_corr_truhlar100_eV", "dG_corr_grimme_eV", "G_aq_truhlar100_eV", "G_aq_grimme_eV",
+                    "G_aq_truhlar100_DQ_dissociated_eV", "frequencies_at", "status", "reason"],
 }
+SCHEMES = ("harmonic", "truhlar100", "grimme")
 
 
 def _check_output(path):
@@ -185,14 +195,16 @@ def table_cnf(S):
     for meth, f in (("DFT", S.dft), ("MLIP", S.mlip)):
         e = {m: _add_const(f(f"{m}@Au", "-Au", f"-{m}_gas"), -gs[m] if gs.get(m) is not None else None, f"G_solv({m})")
              for m in ("CNF", "THI", "TBZ", "DQ")}
+        path = lambda m: ((S.items.get(f"{m}@Au") or {}).get("source") or {}).get("path")
         rows.append(_row(molecule="CNF", quantity="E_ads_aq", method=meth, value_eV=e["CNF"][0], status=e["CNF"][1],
-                         reason=e["CNF"][2], inputs=e["CNF"][3]))
+                         reason=e["CNF"][2], inputs=e["CNF"][3], _path=path("CNF"), _mols=["CNF"]))
         for m in ("THI", "TBZ", "DQ"):
             x = e[m]
             ex = _sub(x, (e["CNF"][0] * fp[m] / fp["CNF"], *e["CNF"][1:]) if e["CNF"][0] is not None else e["CNF"])
             tr = _add_const(ex, -cb[m] if m in cb else None, f"dE_bind({m})")
             for q, y in (("E_ads_aq", x), ("equal_area_exchange", ex), ("transfer_CNF_to_Au", tr)):
-                rows.append(_row(molecule=m, quantity=q, method=meth, value_eV=y[0], status=y[1], reason=y[2], inputs=y[3]))
+                rows.append(_row(molecule=m, quantity=q, method=meth, value_eV=y[0], status=y[1], reason=y[2], inputs=y[3],
+                                 **({"_path": path(m), "_mols": [m]} if q == "E_ads_aq" else {})))
     return rows
 
 
@@ -203,10 +215,101 @@ def table_ternary(S):
         mols = it.get("molecules") or k.split("+")
         x = S.dft(k, "-Au", *[f"-{m}_gas" for m in mols])
         x = _add_const(x, -sum(gs[m] for m in mols) if all(m in gs for m in mols) else None, "G_solv")
-        rows.append(_row(state=k, quantity="G_state_aq", method="DFT", value_eV=x[0], status=x[1], reason=x[2], inputs=x[3]))
+        src = it.get("source") or (it.get("meta") or {}).get("source") or {}
+        rows.append(_row(state=k, quantity="G_state_aq", method="DFT", value_eV=x[0], status=x[1], reason=x[2], inputs=x[3],
+                         _path=src.get("path"), _mols=list(mols)))
         rows.append(_row(state=k, quantity="G_state_aq", method="MLIP", value_eV=ml.get(k),
                          status="completed" if k in ml else "not_available", reason="" if k in ml else "no MLIP value",
                          inputs=["record.constants.mlip_state_eV"]))
+    return rows
+
+
+def table_poses(S):
+    """E_ads,aq per pose; lowest_in_cell marks the lowest completed value per cell, molecule and method."""
+    rows, gs = [], S.c.get("G_solv_eV", {})
+    for meth, f in (("DFT", S.dft), ("MLIP", S.mlip)):
+        block = []
+        for k, it in S.items.items():
+            if it.get("role") != "pose": continue
+            m = it.get("molecule")
+            if it.get("ref") and it.get("gas"):
+                x = _add_const(f(k, f"-{it['ref']}", f"-{it['gas']}"), -gs[m] if m in gs else None, f"G_solv({m})")
+            else:
+                x = (None, it["status"], it["reason"], [k])
+            ref = S.items.get(it.get("ref") or "", {})
+            src = it.get("source") or {}
+            area = ref.get("area_A2")
+            block.append(_row(cell=it.get("cell"), area_A2=f"{area:.1f}" if area else "", molecule=m, pose=it.get("pose"),
+                              origin=src.get("origin", ""), structure=it.get("structure", ""), quantity="E_ads_aq",
+                              method=meth, value_eV=x[0], lowest_in_cell="",
+                              ecut_Ry="/".join(f"{v:g}" for v in it["ecut"]) if it.get("ecut") else "",
+                              kpts="x".join(str(v) for v in ref.get("kpts", [])),
+                              status=it["status"] if it["status"] != "completed" else x[1],
+                              reason=it["reason"] or x[2], inputs=x[3], _path=src.get("path"), _mols=[m]))
+        best = {}
+        for r in block:
+            if r["value_eV"] != "":
+                kk = (r["cell"], r["molecule"])
+                if kk not in best or float(r["value_eV"]) < float(best[kk]["value_eV"]): best[kk] = r
+        for r in best.values(): r["lowest_in_cell"] = "yes"
+        rows += block
+    return rows
+
+
+def _dgcorr(th, path, mols, scheme, dq_diss=False):
+    """G_corr(adsorbed structure) − Σ G_corr(gas, 1 M), or None with a reason."""
+    st = th.get("structures", {}).get(path)
+    if st is None: return None, f"no thermo result for {path}"
+    if st.get("sha256") and os.path.exists(path):
+        import qe_tools
+        if qe_tools.sha256(path) != st["sha256"]: return None, f"{path} changed since its thermo result"
+    g = st["corr"][scheme]["G"]
+    for m in mols:
+        refs = ["DQ2+", "Br-", "Br-"] if (dq_diss and m == "DQ") else [m]
+        for r in refs:
+            if r not in th.get("gas", {}): return None, f"no gas thermo result for {r}"
+            g -= th["gas"][r]["corr"][scheme]["G_1M"]
+    return g, ""
+
+
+def table_thermo(th):
+    rows = []
+    for kind, block in (("gas", th.get("gas", {})), ("adsorbed", th.get("structures", {}))):
+        for name, v in block.items():
+            c = v["corr"]
+            key = "G_1M" if kind == "gas" else "G"
+            rows.append({"kind": kind, "name": name, "molecules": " ".join(v.get("molecules", [])),
+                         "n_modes": len(v.get("freqs_cm1", [])), "n_imag": v.get("n_imag", ""),
+                         "relax_converged": (v.get("relax") or {}).get("converged", ""),
+                         "relax_max_shift_A": f"{v['relax']['max_shift_A']:.3f}" if v.get("relax") else "",
+                         "internal_rmsd_A": f"{v['relax']['internal_rmsd_A']:.3f}" if "internal_rmsd_A" in (v.get("relax") or {}) else "",
+                         "frequencies_at": (v.get("relax") or {}).get("frequencies_at", ""),
+                         "ZPE_eV": f"{c['harmonic']['ZPE']:.4f}" if "ZPE" in c["harmonic"] else "",
+                         **{f"G_corr_{s}_eV": f"{c[s][key]:.4f}" for s in SCHEMES}})
+    return rows
+
+
+def table_free_energy(th, blocks):
+    """DFT water-referenced energies plus MLIP thermal corrections, one row per DFT row with a structure.
+    frequencies_at = "input geometry" means the tight MLIP relaxation changed the pose (see 18_thermo.py)."""
+    rows = []
+    for table, rs, cell, syskey in blocks:
+        for r in rs:
+            if r.get("method") != "DFT" or not r.get("_path"): continue
+            relax = (th.get("structures", {}).get(r["_path"]) or {}).get("relax") or {}
+            out = dict(table=table, cell=r.get("cell") or cell, system=r.get(syskey, ""), pose=r.get("pose", ""),
+                       origin=r.get("origin", ""), quantity=r.get("quantity", ""), E_aq_DFT_eV=r["value_eV"],
+                       frequencies_at=relax.get("frequencies_at", ""), status=r["status"], reason=r["reason"])
+            for sc in SCHEMES:
+                d, why = _dgcorr(th, r["_path"], r["_mols"], sc)
+                out[f"dG_corr_{sc}_eV"] = "" if d is None else f"{d:.4f}"
+                if d is None and out["status"] == "completed": out.update(status="not_available", reason=why)
+                if sc != "harmonic":
+                    out[f"G_aq_{sc}_eV"] = f"{float(r['value_eV']) + d:.4f}" if d is not None and r["value_eV"] != "" else ""
+            if "DQ" in r["_mols"]:
+                d, _ = _dgcorr(th, r["_path"], r["_mols"], "truhlar100", dq_diss=True)
+                out["G_aq_truhlar100_DQ_dissociated_eV"] = f"{float(r['value_eV']) + d:.4f}" if d is not None and r["value_eV"] != "" else ""
+            rows.append(out)
     return rows
 
 
@@ -254,8 +357,18 @@ def build(root="results", log=print):
     if "coverage" in recs or "check" in recs:
         cov = recs.get("coverage") or Calc({"items": [], "constants": recs["check"].c})
         _write(root, "coverage", table_coverage(cov, recs.get("check")))
-    if "cnf" in recs: _write(root, "cnf", table_cnf(recs["cnf"]))
-    if "ternary118" in recs: _write(root, "ternary118", table_ternary(recs["ternary118"]))
+    blocks = []   # (table, rows, default cell, system column) for free_energy.csv
+    if "cnf" in recs:
+        cr = table_cnf(recs["cnf"]); _write(root, "cnf", cr)
+        blocks.append(("cnf", [r for r in cr if r["quantity"] == "E_ads_aq"], "6x6", "molecule"))
+    if "ternary118" in recs:
+        tr = table_ternary(recs["ternary118"]); _write(root, "ternary118", tr); blocks.append(("ternary118", tr, "4x4", "state"))
+    if "poses" in recs:
+        pr = table_poses(recs["poses"]); _write(root, "poses", pr); blocks.append(("poses", pr, "", "molecule"))
+    tp = os.path.join(root, "thermo", "thermo.json")
+    if os.path.exists(tp):
+        th = json.load(open(tp))
+        _write(root, "thermo", table_thermo(th)); _write(root, "free_energy", table_free_energy(th, blocks))
     json.dump({"schema_version": SCHEMA_VERSION, "tables": COLUMNS, "status_values":
                ["completed", "failed", "incomplete", "not_available", "superseded"], "summary": summary},
               open(os.path.join(root, "tables", "schema.json"), "w"), indent=1)

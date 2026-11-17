@@ -215,6 +215,44 @@ class TestAggregation(Base):
         s = aggregate.build("results", log=self.log)
         self.assertEqual(s["check"].get("incomplete"), 1)
 
+    def test_pose_table_uses_reference_slab(self):
+        self.make_check_stage().finish()
+        st = Q.Stage("poses", "dft_poses", "log.txt"); st.constants["G_solv_eV"] = {"THI": -0.4}
+        ref = Q.read_meta("results/dft_check", "Au"); gas = Q.read_meta("results/dft_check", "THI_gas")
+        st.add("ref/4x4", ref, role="slab", area_A2=8.3, kpts=[2, 2, 1])
+        st.add("gas60/THI", gas, role="gas", molecule="THI")
+        up = Q.run_or_reuse("results/dft_poses/4x4", "THI_up", slab() + Atoms("H", [[0, 0, 6]]),
+                            {"Au": PPS["Au"], "H": PPS["H"]}, 30, 240, (2, 2, 1), True, self.log)
+        self.assertEqual(self.ncalls(), 7, "a pose computed by another stage must be reused")
+        flat = Q.run_or_reuse("results/dft_poses/4x4", "THI_flat", slab() + Atoms("H", [[0, 0, 5]]),
+                              {"Au": PPS["Au"], "H": PPS["H"]}, 30, 240, (2, 2, 1), True, self.log)
+        for k, m, p in (("4x4/THI@Au/up/compete", up, "up"), ("4x4/THI@Au/flat/compete", flat, "flat")):
+            st.add(k, m, cell="4x4", molecule="THI", pose=p, role="pose", ref="ref/4x4", gas="gas60/THI", ecut=[30, 240])
+        st.add("4x4/THI@Au/diss", None, "not_available", "does not fit this cell", cell="4x4", molecule="THI", pose="diss", role="pose")
+        st.finish()
+        rows = [r for r in csv.DictReader(open("results/tables/poses.csv")) if r["method"] == "DFT"]
+        val = {r["pose"]: r for r in rows}
+        for p, name in (("up", "results/dft_check/THI_Au"), ("flat", "results/dft_poses/4x4/THI_flat")):
+            e = Q.check_output(f"{name}.out")["energy_total_eV"] - self.raw("Au") - self.raw("THI_gas") + 0.4
+            self.assertAlmostEqual(float(val[p]["value_eV"]), e, places=3)
+        low = min(("up", "flat"), key=lambda p: float(val[p]["value_eV"]))
+        self.assertEqual([r["pose"] for r in rows if r["lowest_in_cell"] == "yes"], [low])
+        self.assertEqual((val["diss"]["value_eV"], val["diss"]["status"]), ("", "not_available"))
+
+    def test_free_energy_adds_corrections(self):
+        rows = [{"method": "DFT", "cell": "4x4", "molecule": "DQ", "pose": "up", "quantity": "E_ads_aq",
+                 "value_eV": "-2.0000", "status": "completed", "reason": "", "_path": "s.traj", "_mols": ["DQ"]},
+                {"method": "DFT", "cell": "4x4", "molecule": "THI", "pose": "up", "quantity": "E_ads_aq",
+                 "value_eV": "-2.5000", "status": "completed", "reason": "", "_path": "missing.traj", "_mols": ["THI"]}]
+        corr = lambda g, key="G": {s: {key: g, "ZPE": 0.0} for s in aggregate.SCHEMES}
+        th = {"structures": {"s.traj": {"corr": corr(5.0), "relax": {"frequencies_at": "input geometry"}}},
+              "gas": {"DQ": {"corr": corr(4.3, "G_1M")}, "DQ2+": {"corr": corr(4.4, "G_1M")}, "Br-": {"corr": corr(-0.4, "G_1M")}}}
+        out = {r["system"]: r for r in aggregate.table_free_energy(th, [("poses", rows, "", "molecule")])}
+        self.assertAlmostEqual(float(out["DQ"]["G_aq_truhlar100_eV"]), -2.0 + 5.0 - 4.3, places=4)
+        self.assertAlmostEqual(float(out["DQ"]["G_aq_truhlar100_DQ_dissociated_eV"]), -2.0 + 5.0 - 4.4 + 0.8, places=4)
+        self.assertEqual(out["DQ"]["frequencies_at"], "input geometry")
+        self.assertEqual((out["THI"]["G_aq_truhlar100_eV"], out["THI"]["status"]), ("", "not_available"))
+
     def test_partial_run_keeps_previous_items(self):
         st = Q.Stage("coverage", "dft_coverage", "log.txt"); st.add("3x3/Au", None, "not_available", "x", cell="3x3"); st.finish()
         st = Q.Stage("coverage", "dft_coverage", "log.txt"); st.add("5x5/Au", None, "not_available", "y", cell="5x5"); st.finish()
